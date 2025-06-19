@@ -1,0 +1,149 @@
+//go:build linux
+
+package crowdstrike
+
+// see if gLinux has helpers similar to "google3/third_party/py/glazier/go/helpers/helpers"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"strings"
+
+	"google3/base/go/log"
+	"google3/corp/platforms/fix/checks/checks"
+	"google3/corp/platforms/fix/lib/check"
+	"google3/corp/platforms/fix/lib/result"
+	"google3/goobuntu/go/cmd"
+	"google3/goobuntu/go/hwcheck"
+	"google3/third_party/golang/stringset/stringset"
+)
+
+var (
+	pkgName       = "falcon-sensor"
+	processPath   = "/opt/CrowdStrike/falconctl"
+
+	// Server CID: CA7F54901CDA488496503085C99B2F3D-A6
+	// Client CID: F3C9100733704C2999046FEDA48410B7-2D
+
+	// cidServer     = "ca7f54901cda488496503085c99b2f3d"
+	cidClient = "f3c9100733704c2999046feda48410b7"
+)
+
+func main(){
+}
+
+func checkCrowdStrike(ctx context.Context) (string, error) {
+	fmt.Println("Checking if crowdstrike package is installed")
+
+	// check if server role TODO: remove this once server crowdwstrike check is figured out
+	role, err := checkIfServerRole()
+	if err != nil {
+		return "", fmt.Error("Failed to determine machine role")
+	}
+	if supported := stringset.New("desktop", "laptop"); !supported.Contains(role) {
+		return "", fmt.Errorf("role %q is not currently supported, want one of %s", role, supported)
+	}
+
+	installed, err := isCrowdStrikeInstalled(ctx)
+	if err != nil {
+		return "", fmt.Error("Failed to check if CrowdStrike is installed")
+	}
+	if !installed {
+		return "", fmt.Error("CrowdStrike package is not installed"), installCrowdStrike
+	}
+
+	// Check if processPath exists, bash way: if [ -f /opt/CrowdStrike/falconctl ]; then echo "exist";fi
+	_, err = os.Stat(processPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		log.ErrorContextf(ctx, "Failed to stat %s: %v", processPath, err)
+		return fmt.Errorf("Failed to stat %s", processPath), reinstallCrowdStrike
+	}
+
+	fmt.Println("Checking if crowdstrike service is running")
+
+	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("status", "falcon-sensor")); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			switch exitError.ExitCode() {
+			case 0:
+				return fmt.Println("CrowdStrike service is running"), nil
+			case 3:
+				return "", fmt.Error("CrowdStrike service is masked, will try to unmask"), unmaskCrowdStrike
+			case 4:
+				return fmt.Error("Failed to run systemctl status falcon-sensor, trying to install"), installCrowdStrike // checkCrowdStrikePackage should install the package, but if it fails, we can try to install it again here
+			default:
+				return fmt.Error("Failed to run systemctl status falcon-sensor, trying to restart"), restartCrowdStrike
+			}
+		}
+	}
+	return result.Pass("CrowdStrike service seems to be in a healthy state").WithCode(21), nil
+}
+
+func isCrowdStrikeInstalled(ctx context.Context) (bool, error) {
+	if output, err := cmd.Output(ctx, "/usr/bin/apt", cmd.WithArgs("list", "--installed")); err != nil {
+		return false, fmt.Errorf("Failed to run apt --installed list: %v", err)
+	} else if !strings.Contains(string(output), pkgName) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// TODO: heistant on doing a install and reinstall of crowdstrike. Tabane should be able to do this.
+func installCrowdStrike(ctx context.Context) result.Result {
+	check.Progress(ctx, "Installing CrowdStrike")
+	// install falcon-sensor
+	if err := cmd.Run(ctx, "/usr/bin/apt-get", cmd.WithArgs("install", pkgName)); err != nil {
+		return result.Failf("Unable to install %s", pkgName).WithCode(22)
+	}
+	// sudo /opt/CrowdStrike/falconctl -s --cid="F3C9100733704C2999046FEDA48410B7-2D"
+	if err := cmd.Run(ctx, processPath, cmd.WithArgs("-s"), cmd.WithArgs("--cid=F3C9100733704C2999046FEDA48410B7-2D")); err != nil {
+		return result.Failf("Unable to run falconctl").WithCode(23)
+	}
+	return restartCrowdStrike(ctx)
+}
+
+func reinstallCrowdStrike(ctx context.Context) result.Result {
+	check.Progress(ctx, "Reinstalling CrowdStrike")
+	// reinstall falcon-sensor
+	if err := cmd.Run(ctx, "/usr/bin/apt-get", cmd.WithArgs("install", "--reinstall", pkgName)); err != nil {
+		return result.Failf("Unable to reinstall %s", pkgName).WithCode(24)
+	}
+	// sudo /opt/CrowdStrike/falconctl -s --cid="F3C9100733704C2999046FEDA48410B7-2D"
+	if err := cmd.Run(ctx, processPath, cmd.WithArgs("-s"), cmd.WithArgs("--cid=F3C9100733704C2999046FEDA48410B7-2D")); err != nil {
+		return result.Failf("Unable to run falconctl error").WithCode(25)
+	}
+	return restartCrowdStrike(ctx)
+}
+func restartCrowdStrike(ctx context.Context) result.Result {
+	check.Progress(ctx, "Restarting CrowdStrike")
+	// restart falcon-sensor
+	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("restart", "falcon-sensor.service")); err != nil {
+		check.Progress(ctx, fmt.Sprintf("Unable to restart %s: %v", "falcon-sensor.service", err))
+		reinstallCrowdStrike(ctx)
+	}
+	return result.Pass("Successfully restarted CrowdStrike").WithCode(26)
+}
+
+func unmaskCrowdStrike(ctx context.Context) result.Result {
+	check.Progress(ctx, "Unmasking CrowdStrike")
+	// unmask falcon-sensor and start it
+	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("unmask", "falcon-sensor.service")); err != nil {
+		return result.Failf("Unable to unmask falcon-sensor.service").WithCode(27)
+	}
+	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("start", "falcon-sensor.service")); err != nil {
+		return result.Failf("Unable to restart falcon-sensor.service").WithCode(28)
+	}
+	return result.Pass("Successfully unmasked CrowdStrike").WithCode(29)
+}
+
+func checkIfServerRole() (string, error) {
+	mi, err := hwcheck.LocalMachine()
+	if err != nil {
+		log.Errorf("Failed to determine machine role: %v", err)
+		return "", err
+	}
+	var role string = mi.Role
+	return role, nil
+}
