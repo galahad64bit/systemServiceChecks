@@ -2,6 +2,7 @@ package crowdstrike
 
 import (
 	"context"
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,6 +25,7 @@ var (
 )
 
 func main(){
+// TODO: catch return strings and run correlating function
 }
 
 func checkCrowdStrike(ctx context.Context) (string, error) {
@@ -46,7 +48,14 @@ func checkCrowdStrike(ctx context.Context) (string, error) {
 
 	fmt.Println("Checking if crowdstrike service is running")
 
-	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("status", "falcon-sensor")); err != nil {
+	cmd := exec.Cmd("systemctl", "status", "falcon-sensor")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			switch exitError.ExitCode() {
 			case 0:
@@ -64,7 +73,7 @@ func checkCrowdStrike(ctx context.Context) (string, error) {
 }
 
 func isCrowdStrikeInstalled(ctx context.Context) (bool, error) {
-	if output, err := cmd.Output(ctx, "/usr/bin/apt", cmd.WithArgs("list", "--installed")); err != nil {
+	if output, err := exec.Cmd(ctx, "/usr/bin/apt","list", "--installed").Output(); err != nil {
 		return false, fmt.Errorf("Failed to run apt --installed list: %v", err)
 	} else if !strings.Contains(string(output), pkgName) {
 		return false, nil
@@ -76,11 +85,24 @@ func isCrowdStrikeInstalled(ctx context.Context) (bool, error) {
 func installCrowdStrike(ctx context.Context) (string,error) {
 	fmt.Println("Installing CrowdStrike")
 	// install falcon-sensor
-	if err := cmd.Run(ctx, "/usr/bin/apt-get", cmd.WithArgs("install", pkgName)); err != nil {
+	cmd := exec.Cmd(ctx, "/usr/bin/apt-get", cmd.WithArgs("install", pkgName))
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
 		return fmt.Errorf("Unable to install %s", pkgName)
 	}
 	// sudo /opt/CrowdStrike/falconctl -s --cid="F3C9100733704C2999046FEDA48410B7-2D"
-	if err := cmd.Run(ctx, processPath, cmd.WithArgs("-s"), cmd.WithArgs("--cid=F3C9100733704C2999046FEDA48410B7-2D")); err != nil {
+	cmd2 = exec.Cmd(processPath,"-s","--cid=F3C9100733704C2999046FEDA48410B7-2D")
+
+	cmd2.Stdout = &stdout
+	cmd2.Stderr = &stderr
+
+	err = cmd2.Run()
+	if err != nil {
 		return fmt.Error("Unable to run falconctl")
 	}
 	return "restart", nil
@@ -89,32 +111,64 @@ func installCrowdStrike(ctx context.Context) (string,error) {
 func reinstallCrowdStrike(ctx context.Context) (string, error) {
 	fmt.Println("Reinstalling CrowdStrike")
 	// reinstall falcon-sensor
-	if err := cmd.Run(ctx, "/usr/bin/apt-get", cmd.WithArgs("install", "--reinstall", pkgName)); err != nil {
+	cmd := exec.CommandContext(ctx,"/usr/bin/apt-get", install", "--reinstall", pkgName)
+	
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	err := cmd.Run()
+	if err != nil {
 		return fmt.Errorf("Unable to reinstall %s", pkgName)
 	}
 	// sudo /opt/CrowdStrike/falconctl -s --cid="F3C9100733704C2999046FEDA48410B7-2D"
-	if err := cmd.Run(ctx, processPath, cmd.WithArgs("-s"), cmd.WithArgs("--cid=F3C9100733704C2999046FEDA48410B7-2D")); err != nil {
+	cmd2 := exec.CommandContext(ctx, processPath,"-s", --cid=F3C9100733704C2999046FEDA48410B7-2D") 
+	
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd2.Run()
+	if err != nil {
 		return fmt.Error("Unable to run falconctl error")
 	}
 	return "restart", nil
 }
 func restartCrowdStrike(ctx context.Context) (string, error) {
-	check.Progress(ctx, "Restarting CrowdStrike")
+	fmt.Sprint("Restarting CrowdStrike")
 	// restart falcon-sensor
-	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("restart", "falcon-sensor.service")); err != nil {
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "falcon-sensor.service")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	if err != nil {
 		return "reinstall", fmt.Errorf("Unable to restart %s: %v", "falcon-sensor.service", err)
-		
 	}
 	return fmt.Sprintf("Successfully restarted CrowdStrike")
 }
 
 func unmaskCrowdStrike(ctx context.Context) result.Result {
-	check.Progress(ctx, "Unmasking CrowdStrike")
+	fmt.Sprint("Unmasking CrowdStrike")
 	// unmask falcon-sensor and start it
-	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("unmask", "falcon-sensor.service")); err != nil {
+	
+	cmd := exec.CommandContext(ctx, "systemctl", "unmask", "falcon-sensor.service")
+	
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	err := cmd.Run()
+	if err != nil {
 		return fmt.Error("unable to unmask falcon-sensor.service")
 	}
-	if err := cmd.Run(ctx, "systemctl", cmd.WithArgs("start", "falcon-sensor.service")); err != nil {
+	cmd2 := exec.CommandContext(ctx, "systemctl", cmd.WithArgs("start", "falcon-sensor.service"))
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	err = cmd2.Run()
+	if err != nil {
 		return fmt.Errof("unable to restart falcon-sensor.service")
 	}
 	return fmt.Sprint("Successfully unmasked CrowdStrike")
